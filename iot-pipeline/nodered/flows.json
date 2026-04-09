@@ -1,0 +1,143 @@
+[
+  {
+    "id": "tab_iot",
+    "type": "tab",
+    "label": "IoT Sensor Pipeline"
+  },
+  {
+    "id": "mqtt_broker_cfg",
+    "type": "mqtt-broker",
+    "name": "Mosquitto",
+    "broker": "mosquitto",
+    "port": "1883",
+    "clientid": "nodered-client",
+    "autoConnect": true,
+    "usetls": false,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true
+  },
+  {
+    "id": "inject_trigger",
+    "type": "inject",
+    "z": "tab_iot",
+    "name": "Every 2s",
+    "repeat": "2",
+    "once": true,
+    "onceDelay": "0.5",
+    "payload": "",
+    "payloadType": "date",
+    "x": 140,
+    "y": 120,
+    "wires": [
+      [
+        "fn_sensor_gen"
+      ]
+    ]
+  },
+  {
+    "id": "fn_sensor_gen",
+    "type": "function",
+    "z": "tab_iot",
+    "name": "Generate Sensor Data",
+    "func": "// 10% chance of anomaly for testing\nvar anomaly = Math.random() < 0.1;\n\nvar temp      = anomaly ? 60 + Math.random() * 15 : 15 + Math.random() * 25;\nvar humidity  = anomaly ? 94 + Math.random() * 6  : 30 + Math.random() * 50;\nvar windSpeed = anomaly ? 40 + Math.random() * 20 : Math.random() * 25;\n\nmsg.payload = JSON.stringify({\n    temperature: parseFloat(temp.toFixed(2)),\n    humidity:    parseFloat(humidity.toFixed(2)),\n    wind_speed:  parseFloat(windSpeed.toFixed(2)),\n    device_id:   'sensor-001',\n    timestamp:   new Date().toISOString()\n});\nreturn msg;",
+    "outputs": 1,
+    "x": 320,
+    "y": 120,
+    "wires": [
+      [
+        "mqtt_out"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_out",
+    "type": "mqtt out",
+    "z": "tab_iot",
+    "name": "Publish to MQTT",
+    "topic": "iot/sensors/data",
+    "qos": "0",
+    "retain": "false",
+    "broker": "mqtt_broker_cfg",
+    "x": 530,
+    "y": 120,
+    "wires": []
+  },
+  {
+    "id": "mqtt_in",
+    "type": "mqtt in",
+    "z": "tab_iot",
+    "name": "Receive from MQTT",
+    "topic": "iot/sensors/data",
+    "qos": "0",
+    "datatype": "auto-detect",
+    "broker": "mqtt_broker_cfg",
+    "x": 140,
+    "y": 300,
+    "wires": [
+      [
+        "fn_prepare_request"
+      ]
+    ]
+  },
+  {
+    "id": "fn_prepare_request",
+    "type": "function",
+    "z": "tab_iot",
+    "name": "Prepare API Request",
+    "func": "var sensor = (typeof msg.payload === 'string') ? JSON.parse(msg.payload) : msg.payload;\n\nmsg.originalData = sensor;\nmsg.payload = { temperature: sensor.temperature, humidity: sensor.humidity, wind_speed: sensor.wind_speed };\nmsg.headers = { 'Content-Type': 'application/json' };\nreturn msg;",
+    "outputs": 1,
+    "x": 340,
+    "y": 300,
+    "wires": [
+      [
+        "http_anomaly_api"
+      ]
+    ]
+  },
+  {
+    "id": "http_anomaly_api",
+    "type": "http request",
+    "z": "tab_iot",
+    "name": "Call Anomaly API",
+    "method": "POST",
+    "ret": "obj",
+    "url": "http://anomaly-api:8000/predict",
+    "x": 560,
+    "y": 300,
+    "wires": [
+      [
+        "fn_write_influx"
+      ]
+    ]
+  },
+  {
+    "id": "fn_write_influx",
+    "type": "function",
+    "z": "tab_iot",
+    "name": "Write to InfluxDB",
+    "func": "var ml = msg.payload;\nvar d  = msg.originalData;\n\n// Build InfluxDB Line Protocol string\nvar tags   = 'device_id=' + d.device_id;\nvar fields = 'temperature=' + d.temperature + ',humidity=' + d.humidity + ',wind_speed=' + d.wind_speed + ',anomaly=' + (ml.anomaly ? '1.0' : '0.0') + ',score=' + ml.score;\nvar ts     = Date.now() * 1000000; // nanoseconds\n\nmsg.payload = 'environment_metrics,' + tags + ' ' + fields + ' ' + ts;\nmsg.headers = { 'Authorization': 'Token my-super-secret-token', 'Content-Type': 'text/plain' };\n\nnode.status({ fill: ml.anomaly ? 'red' : 'green', shape: 'dot', text: ml.anomaly ? 'ANOMALY' : 'Normal' });\nreturn msg;",
+    "outputs": 1,
+    "x": 780,
+    "y": 300,
+    "wires": [
+      [
+        "http_influxdb"
+      ]
+    ]
+  },
+  {
+    "id": "http_influxdb",
+    "type": "http request",
+    "z": "tab_iot",
+    "name": "InfluxDB Write API",
+    "method": "POST",
+    "ret": "txt",
+    "url": "http://influxdb:8086/api/v2/write?org=iot&bucket=iot_data&precision=ns",
+    "x": 1000,
+    "y": 300,
+    "wires": [
+      []
+    ]
+  }
+]
